@@ -1070,3 +1070,84 @@ class PlaywrightController:
         await self._ensure_page_ready(page)
         await page.keyboard.press("Tab")
         await page.keyboard.press("Enter")
+
+    @handle_target_closed()
+    async def get_page_snapshot(
+        self,
+        page: Page,
+        selectors: list[str] | None = None,
+        include_html: bool = False,
+    ) -> Dict[str, Any]:
+        await self._ensure_page_ready(page)
+        return cast(
+            Dict[str, Any],
+            await page.evaluate(
+                """({ selectors, includeHtml }) => {
+                    const selectorList = Array.isArray(selectors) ? selectors : [];
+
+                    function isVisible(el) {
+                        const style = window.getComputedStyle(el);
+                        const rect = el.getBoundingClientRect();
+                        const hasBox =
+                            rect.width > 0 ||
+                            rect.height > 0 ||
+                            el.getClientRects().length > 0;
+                        return hasBox &&
+                            style.display !== "none" &&
+                            style.visibility !== "hidden" &&
+                            style.opacity !== "0";
+                    }
+
+                    function attributesFor(el) {
+                        const attrs = {};
+                        for (const attr of Array.from(el.attributes || [])) {
+                            attrs[attr.name] = attr.value;
+                        }
+                        return attrs;
+                    }
+
+                    function elementSnapshot(el) {
+                        return {
+                            tagName: (el.tagName || "").toLowerCase(),
+                            text: el.innerText || el.textContent || "",
+                            textContent: el.textContent || "",
+                            html: el.outerHTML || "",
+                            visible: isVisible(el),
+                            attributes: attributesFor(el),
+                            value: "value" in el ? String(el.value) : "",
+                            checked: "checked" in el ? Boolean(el.checked) : false,
+                        };
+                    }
+
+                    const elements = {};
+                    const selectorErrors = {};
+                    for (const selector of selectorList) {
+                        try {
+                            elements[selector] = Array.from(document.querySelectorAll(selector))
+                                .slice(0, 100)
+                                .map(elementSnapshot);
+                        } catch (error) {
+                            selectorErrors[selector] = String(
+                                error && error.message ? error.message : error
+                            );
+                            elements[selector] = [];
+                        }
+                    }
+
+                    return {
+                        url: window.location.href,
+                        title: document.title || "",
+                        text: document.body ? document.body.innerText || "" : "",
+                        html: includeHtml && document.documentElement
+                            ? document.documentElement.outerHTML || ""
+                            : "",
+                        elements,
+                        selector_errors: selectorErrors,
+                    };
+                }""",
+                {
+                    "selectors": selectors or [],
+                    "includeHtml": include_html,
+                },
+            ),
+        )

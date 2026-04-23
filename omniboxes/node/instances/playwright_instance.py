@@ -225,6 +225,15 @@ class PlaywrightInstance(InstanceBase):
                 # Get page metadata with guaranteed title and url fields
                 metadata = await self.controller.get_page_metadata(self.page)
                 return metadata
+            
+            elif command_type == "get_page_snapshot":
+                selectors = args.get("selectors", [])
+                include_html = bool(args.get("include_html", False))
+                return await self.controller.get_page_snapshot(
+                    self.page,
+                    selectors=selectors,
+                    include_html=include_html,
+                )
                 
             elif command_type == "get_interactive_rects":
                 # Get current interactive regions using the controller
