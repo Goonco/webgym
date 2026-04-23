@@ -4,15 +4,18 @@ import time
 import os
 import pickle
 import traceback
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, ParamSpec, TypeVar
 import threading
 import queue
 import psutil
 import concurrent.futures
 from concurrent.futures import Future
 
+from src.webgym.error import HttpStackOperationTimeoutError
+import math
 
-
+_R = TypeVar("_R")
+_P = ParamSpec("_P")
 
 class ProcessIsolator:
     """
@@ -143,6 +146,68 @@ class ProcessIsolator:
             return True
         except:
             return False
+        
+    def single_execute_with_timeout(
+        self,
+        func: Callable[_P, _R],
+        check_timeout: Callable,
+        timeout: float,
+        func_name,
+        *args: _P.args,
+        **kwargs: _P.kwargs,
+    ) -> _R:
+        """
+        Modified version of `execute_with_timeout` for gateway support and enhanced type inference
+        """
+
+        start_time = time.time()
+
+        if self._shutdown:
+            raise Exception("Process isolator is shut down")
+
+        if not self._is_pool_healthy():
+            print(f"⚠️ Pool not healthy for {func_name}, restarting...")
+            with self._process_lock:
+                if not self._shutdown:
+                    if self.process_pool:
+                        try:
+                            self.process_pool.terminate()
+                            self.process_pool.join()
+                        except:
+                            pass
+                        self.process_pool = None
+                    self._create_new_pool_with_retry()
+
+        if not self.process_pool or not self._is_pool_healthy():
+            raise Exception("Pool not running")
+
+        worker_hard_timeout = max(1, math.ceil(timeout))
+        async_result = self.process_pool.apply_async(
+            self._execute_wrapper, (func, args, kwargs, func_name, worker_hard_timeout)
+        )
+
+        try:
+            poll_interval = 1.0
+            elapsed = 0.0
+            while elapsed < timeout:
+                check_timeout(__name__)
+                if self._shutdown:
+                    raise Exception("Process isolator is shutting down")
+
+                wait_for = min(poll_interval, timeout - elapsed)
+                try:
+                    result = async_result.get(timeout=wait_for)
+                    return result
+                except multiprocessing.TimeoutError:
+                    elapsed += wait_for
+                    continue
+            raise multiprocessing.TimeoutError()
+
+        except multiprocessing.TimeoutError:
+            execution_time = time.time() - start_time
+            print(f"Process timeout for {func_name} after {execution_time:.1f}s")
+            print("Abandoning result wait; worker has a per-attempt hard timeout")
+            raise HttpStackOperationTimeoutError(f"Process timeout after {timeout:.0f}s")
     
     def execute_with_timeout(self, func: Callable, args: tuple = (), kwargs: dict = None,
                            timeout: float = None, task_id: str = "", func_name: str = "",
@@ -300,7 +365,7 @@ class ProcessBasedHttpStack:
     Uses unified timeout and retry configuration from rollout.yaml.
     """
 
-    def __init__(self, pool_config: dict, wait_timeout: float, timeout: float, max_retries: int = 2):
+    def __init__(self, pool_config: dict, wait_timeout: float = 3600.0, timeout: float = 120, max_retries: int = 2):
         """
         Initialize HTTP stack with separate pools for each operation type.
 
@@ -437,6 +502,42 @@ class ProcessBasedHttpStack:
                 print(f"   ✓ Isolator {operation_name} stopped")
             self._running = False
             print("✅ Process-based HTTP stack stopped")
+
+    def single_execute(
+        self,
+        func: Callable[_P, _R],
+        check_timeout: Callable,
+        timeout: float,
+        *args: _P.args,
+        **kwargs: _P.kwargs,
+    ) -> _R:
+        """
+        Modified version of `execute` for gateway support and enhanced type inference
+        """
+
+        check_timeout(__name__)
+        if not self._running:
+            raise RuntimeError("Process-based HTTP stack is not running")
+
+        func_name = func.__name__
+        pool_name = self._get_pool_name(func_name)
+
+        isolator = self.isolators.get(pool_name, self.isolators.get("execute"))
+        if isolator is None:
+            raise ValueError(
+                f"No process pool available for operation '{func_name}' (pool '{pool_name}' is disabled or doesn't exist)"
+            )
+
+        result = isolator.single_execute_with_timeout(
+            func,
+            check_timeout,
+            timeout,
+            func_name,
+            *args,
+            **kwargs,
+        )
+
+        return result
     
     def execute(self, func: Callable, args: tuple = (), kwargs: dict = None,
                task_id: str = "", func_name: str = "",
