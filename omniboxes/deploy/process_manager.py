@@ -41,7 +41,7 @@ class ProcessInfo:
 class OmniboxesLauncher:
     """Launches and manages OmniBoxes servers"""
 
-    def __init__(self, num_instances: int):
+    def __init__(self, num_instances: int, master_workers: int, node_workers : int):
         self.num_instances = num_instances
         self.processes: Dict[str, ProcessInfo] = {}
         self.instance_start_port = 9000
@@ -49,8 +49,8 @@ class OmniboxesLauncher:
         self.master_port = 7000
         self.redis_port = 6379
         self.redis_host = 'localhost'
-        self.node_workers = 32
-        self.master_workers = 32
+        self.node_workers = node_workers
+        self.master_workers = master_workers
         self.redis_pid: Optional[int] = None
         self._we_started_redis = False
         self._cleaned_up = False

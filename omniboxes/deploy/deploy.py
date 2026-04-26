@@ -39,6 +39,18 @@ For more information, see omniboxes/deploy/README.md
     )
 
     parser.add_argument(
+        "master_workers",
+        type=int,
+        help="Number of master workers"
+    )
+
+    parser.add_argument(
+        "node_workers",
+        type=int,
+        help="Number of node workers"
+    )
+
+    parser.add_argument(
         "--nginx",
         action="store_true",
         help="Setup nginx reverse proxy for external access (requires sudo)"
@@ -115,7 +127,7 @@ For more information, see omniboxes/deploy/README.md
     print("=" * 60 + "\n")
 
     # Create and configure launcher
-    launcher = OmniboxesLauncher(args.instances)
+    launcher = OmniboxesLauncher(args.instances, args.master_workers, args.node_workers)
     launcher.instance_start_port = args.instance_start_port
     launcher.node_port = args.node_port
     launcher.master_port = args.master_port
