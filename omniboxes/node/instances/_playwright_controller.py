@@ -22,7 +22,10 @@ from omniboxes.node.instances._types import (
 # Some of the Code for clicking coordinates and keypresses adapted from https://github.com/openai/openai-cua-sample-app/blob/main/computers/base_playwright.py
 # Copyright 2025 OpenAI - MIT License
 CUA_KEY_TO_PLAYWRIGHT_KEY = {
-    "/": "Divide",
+    "/": "Slash",
+    "slash": "Slash",
+    "divide": "NumpadDivide",
+    # "/": "Divide",
     "\\": "Backslash",
     "alt": "Alt",
     "arrowdown": "ArrowDown",
