@@ -1,6 +1,7 @@
-from typing import Any, Dict
 from io import BytesIO
+from typing import Any, Dict
 
+from PIL import Image, ImageDraw
 from playwright.async_api import async_playwright
 from fastapi import HTTPException
 
@@ -51,54 +52,41 @@ class PlaywrightInstance(InstanceBase):
             return id_mapping.get(displayed_id, displayed_id)
         return displayed_id
 
+
     async def _screenshot(self, interaction_mode: str = "set_of_marks") -> BytesIO:
-        """Take a screenshot with optional set-of-marks annotations based on interaction mode."""
-        # Determine whether to apply annotations based on interaction_mode
         apply_annotations = interaction_mode == "set_of_marks"
-        use_sequential_ids = True  # Default behavior
-        
-        # Get the base screenshot
+        use_sequential_ids = True
+
         screenshot_bytes = await self.controller.get_screenshot(self.page)
-        
-        # If annotations are disabled (coordinates mode), return plain screenshot
-        if not apply_annotations:
-            return BytesIO(screenshot_bytes)
-        
-        # Get interactive regions using the controller
-        interactive_regions = await self.controller.get_interactive_rects(self.page)
-        
-        if not interactive_regions:
-            # If no interactive regions found, return plain screenshot
-            return BytesIO(screenshot_bytes)
-        
-        try:
-            # Apply set-of-marks annotation and capture the ID mapping
-            annotated_image, visible_rects, rects_above, rects_below, id_mapping = add_set_of_mark(
-                screenshot_bytes,
-                interactive_regions,
-                use_sequential_ids=use_sequential_ids
-            )
-            
-            # Convert PIL Image back to bytes
-            output_buffer = BytesIO()
-            annotated_image.save(output_buffer, format='PNG')
-            output_buffer.seek(0)
-            
-            # Store the mapping information for potential use
-            self._last_screenshot_info = {
-                'visible_rects': visible_rects,
-                'rects_above': rects_above,
-                'rects_below': rects_below,
-                'interactive_regions': interactive_regions,
-                'id_mapping': id_mapping  # Store the ID mapping for command translation
-            }
-            
-            return output_buffer
-            
-        except Exception as e:
-            # If annotation fails, return plain screenshot
-            self.logger.error(f"Error applying set-of-marks: {str(e)}")
-            return BytesIO(screenshot_bytes)
+        base_image = Image.open(BytesIO(screenshot_bytes))
+        base_image.load()
+
+        image = base_image.convert("RGBA")
+        self._last_screenshot_info = None
+
+        if apply_annotations:
+            interactive_regions = await self.controller.get_interactive_rects(self.page)
+
+            if interactive_regions:
+                try:
+                    annotated_image, visible_rects, rects_above, rects_below, id_mapping = add_set_of_mark(
+                        screenshot_bytes,
+                        interactive_regions,
+                        use_sequential_ids=use_sequential_ids,
+                    )
+
+                    image = annotated_image.convert("RGBA")
+                    self._last_screenshot_info = {
+                        "visible_rects": visible_rects,
+                        "rects_above": rects_above,
+                        "rects_below": rects_below,
+                        "interactive_regions": interactive_regions,
+                        "id_mapping": id_mapping,
+                    }
+                except Exception as e:
+                    self.logger.error(f"Error applying set-of-marks: {str(e)}")
+
+        return self._png_bytes(self._overlay_cursor(image))
 
     async def _probe(self) -> bool:
         return self.status >= Status.STARTED
@@ -125,10 +113,7 @@ class PlaywrightInstance(InstanceBase):
                 await self.controller.back(self.page)
                 
             elif command_type == "click_coords":
-                # Format: {"x": x, "y": y}
-                x = float(args["x"])
-                y = float(args["y"])
-                await self.controller.click_coords(self.page, x, y)
+                await self.controller.click_coords(self.page, args["x"], args["y"], args["button"])
                 
             elif command_type == "click_id":
                 # Format: {"id": "123"}
@@ -207,6 +192,11 @@ class PlaywrightInstance(InstanceBase):
                 direction = args.get("direction", "down").lower()
                 await self.controller.hover_and_scroll_coords(self.page, x, y, direction)
 
+            elif command_type == "scroll_pointer":
+                dx = float(args.get("dx", 0))
+                dy = float(args.get("dy", 0))
+                await self.controller.scroll_pointer(self.page, dx, dy)
+
             elif command_type == "sleep":
                 # Format: {"duration": 2.0}
                 duration = float(args["duration"])
@@ -238,6 +228,15 @@ class PlaywrightInstance(InstanceBase):
             elif command_type == "get_interactive_rects":
                 # Get current interactive regions using the controller
                 rects = await self.controller.get_interactive_rects(self.page)
+                mouse_x, mouse_y = self.controller.pointer_position
+                return {
+                    "mouse_position": {
+                        "x": int(mouse_x),
+                        "y": int(mouse_y),
+                    },
+                    "regions": rects,
+                }
+
                 return rects
                 
             elif command_type == "get_screenshot_info":
@@ -260,3 +259,36 @@ class PlaywrightInstance(InstanceBase):
             
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Error executing command: {str(e)}")
+    
+    def _overlay_cursor(self, image: Image.Image) -> Image.Image:
+        x, y = self.controller.pointer_position
+        width, height = image.size
+
+        if not (0 <= x < width and 0 <= y < height):
+            return image
+
+        if image.mode != "RGBA":
+            image = image.convert("RGBA")
+
+        draw = ImageDraw.Draw(image, "RGBA")
+        x = int(round(x))
+        y = int(round(y))
+
+        outer = [
+            (x, y),
+            (x, y + 22),
+            (x + 5, y + 17),
+            (x + 8, y + 28),
+            (x + 13, y + 26),
+            (x + 10, y + 16),
+            (x + 18, y + 16),
+        ]
+
+        draw.polygon(outer, fill=(0, 0, 0, 255), outline=(255, 255, 255, 255))
+        return image
+
+    def _png_bytes(self, image: Image.Image) -> BytesIO:
+        out = BytesIO()
+        image.save(out, format="PNG")
+        out.seek(0)
+        return out

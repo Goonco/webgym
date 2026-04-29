@@ -4,7 +4,7 @@ import os
 import random
 import time
 import functools
-from typing import Any, Callable, Dict, Optional, Tuple, Union, TypeVar, Awaitable, cast
+from typing import Any, Callable, Dict, Optional, Tuple, Union, TypeVar, Awaitable, cast, Literal
 from pathlib import Path
 
 from playwright._impl._errors import Error as PlaywrightError
@@ -178,7 +178,7 @@ class PlaywrightController:
         self._timeout_load = timeout_load
 
         self._page_script: str = ""
-        self.last_cursor_position: Tuple[float, float] = (0.0, 0.0)
+        self.pointer_position: Tuple[float, float] = (0.0, 0.0)
 
         # Load page script
         script_path = Path(__file__).parent / "_page_script.js"
@@ -187,6 +187,9 @@ class PlaywrightController:
 
     async def sleep(self, page: Page, duration: Union[int, float]) -> None:
         await page.wait_for_timeout(duration * 1000)
+
+    def _set_pointer_position(self, x: float, y: float) -> None:
+        self.pointer_position = (float(x), float(y))
 
     @handle_target_closed()
     async def get_interactive_rects(self, page: Page) -> Dict[str, InteractiveRegion]:
@@ -363,6 +366,7 @@ class PlaywrightController:
         await self._ensure_page_ready(page)
         # Move mouse to top-left to avoid scrollable elements
         await page.mouse.move(10, 10)
+        self._set_pointer_position(10, 10)
         if full_page:
             await page.mouse.wheel(0, self.viewport_height - 50)
         else:
@@ -373,6 +377,7 @@ class PlaywrightController:
         await self._ensure_page_ready(page)
         # Move mouse to top-left to avoid scrollable elements
         await page.mouse.move(10, 10)
+        self._set_pointer_position(10, 10)
         if full_page:
             await page.mouse.wheel(0, -self.viewport_height + 50)
         else:
@@ -397,7 +402,8 @@ class PlaywrightController:
             """)
             await asyncio.sleep(0.05)
 
-        self.last_cursor_position = (end_x, end_y)
+        self._set_pointer_position(end_x, end_y)
+        
 
     async def add_cursor_box(self, page: Page, identifier: str) -> None:
         # animation helper
@@ -441,11 +447,24 @@ class PlaywrightController:
                 }}
             }})();
         """)
+    
+    def _resolve_coords(
+        self,
+        x: float | None,
+        y: float | None,
+    ) -> tuple[float, float]:
+        if x is None or y is None:
+            return self.pointer_position
+        return float(x), float(y)
+
 
     @handle_target_closed()
-    async def click_coords(self, page: Page, x: float, y: float) -> Page | None:
+    async def click_coords(self, page: Page, x: Optional[float], y: Optional[float], button: Literal['left', 'middle', 'right']) -> Page | None:
         new_page: Page | None = None
         await self._ensure_page_ready(page)
+
+        x, y = self._resolve_coords(x, y)
+
 
         # In single tab mode, remove target attributes to avoid opening new tabs
         if self.single_tab_mode:
@@ -470,17 +489,17 @@ class PlaywrightController:
 
         if self.animate_actions:
             # Move cursor to the box slowly
-            start_x, start_y = self.last_cursor_position
+            start_x, start_y = self.pointer_position
             await self.gradual_cursor_animation(page, start_x, start_y, x, y)
             await asyncio.sleep(0.1)
 
             if self.single_tab_mode:
-                await page.mouse.click(x, y, delay=10)
+                await page.mouse.click(x, y, delay=10, button=button)
             else:
                 try:
                     # Give it a chance to open a new page
                     async with page.expect_event("popup", timeout=1000) as page_info:  # type: ignore
-                        await page.mouse.click(x, y, delay=10)
+                        await page.mouse.click(x, y, delay=10, button=button)
                         new_page = await page_info.value  # type: ignore
                         assert isinstance(new_page, Page)
                         await self.on_new_page(new_page)
@@ -488,17 +507,19 @@ class PlaywrightController:
                     pass
         else:
             if self.single_tab_mode:
-                await page.mouse.click(x, y, delay=10)
+                await page.mouse.click(x, y, delay=10, button=button)
             else:
                 try:
                     # Give it a chance to open a new page
                     async with page.expect_event("popup", timeout=1000) as page_info:  # type: ignore
-                        await page.mouse.click(x, y, delay=10)
+                        await page.mouse.click(x, y, delay=10, button=button)
                         new_page = await page_info.value  # type: ignore
                         assert isinstance(new_page, Page)
                         await self.on_new_page(new_page)
                 except TimeoutError:
                     pass
+        
+        self._set_pointer_position(x, y)
         return new_page
 
     @handle_target_closed()
@@ -590,7 +611,7 @@ class PlaywrightController:
         # Optionally animate the click
         if self.animate_actions:
             await self.add_cursor_box(page, identifier)
-            start_x, start_y = self.last_cursor_position
+            start_x, start_y = self.pointer_position
             await self.gradual_cursor_animation(
                 page, start_x, start_y, center_x, center_y
             )
@@ -637,6 +658,7 @@ class PlaywrightController:
             if self._sleep_after_action > 0:
                 await page.wait_for_timeout(self._sleep_after_action * 1000)
 
+        self._set_pointer_position(center_x, center_y)
         return new_page
 
     @handle_target_closed()
@@ -779,7 +801,7 @@ class PlaywrightController:
         if self.animate_actions:
             await self.add_cursor_box(page, identifier)
             # Move cursor to the box slowly
-            start_x, start_y = self.last_cursor_position
+            start_x, start_y = self.pointer_position
             end_x, end_y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
             await self.gradual_cursor_animation(page, start_x, start_y, end_x, end_y)
             await asyncio.sleep(0.1)
@@ -788,6 +810,11 @@ class PlaywrightController:
             await self.remove_cursor_box(page, identifier)
         else:
             await page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+
+        self._set_pointer_position(
+            box["x"] + box["width"] / 2,
+            box["y"] + box["height"] / 2,
+        )
 
     @handle_target_closed()
     async def hover_coords(self, page: Page, x: float, y: float) -> None:
@@ -803,12 +830,12 @@ class PlaywrightController:
 
         if self.animate_actions:
             # Move cursor to the coordinates slowly
-            start_x, start_y = self.last_cursor_position
+            start_x, start_y = self.pointer_position
             await self.gradual_cursor_animation(page, start_x, start_y, x, y)
             await asyncio.sleep(0.1)
 
         await page.mouse.move(x, y)
-        self.last_cursor_position = (x, y)
+        self._set_pointer_position(x, y)
 
     @handle_target_closed()
     async def hover_and_scroll_coords(self, page: Page, x: float, y: float, direction: str = "down") -> None:
@@ -834,12 +861,12 @@ class PlaywrightController:
 
         # First, hover at the coordinates
         if self.animate_actions:
-            start_x, start_y = self.last_cursor_position
+            start_x, start_y = self.pointer_position
             await self.gradual_cursor_animation(page, start_x, start_y, x, y)
             await asyncio.sleep(0.1)
 
         await page.mouse.move(x, y)
-        self.last_cursor_position = (x, y)
+        self._set_pointer_position(x, y)
 
         # Find the closest scrollable element and scroll it directly using JavaScript
         scroll_delta = -100 if direction.lower() == "up" else 100  # Small scroll amount
@@ -900,6 +927,12 @@ class PlaywrightController:
         await asyncio.sleep(0.2)
 
     @handle_target_closed()
+    async def scroll_pointer(self, page: Page, dx: float, dy: float) -> None:
+        await self._ensure_page_ready(page)
+        await page.mouse.wheel(dx, dy)
+
+
+    @handle_target_closed()
     async def fill_coords(
             self, page: Page, x: float, y: float, value: str, press_enter: bool = True, delete_existing_text: bool = False
         ) -> Page | None:
@@ -908,11 +941,12 @@ class PlaywrightController:
 
         if self.animate_actions:
             # Move cursor to the box slowly
-            start_x, start_y = self.last_cursor_position
+            start_x, start_y = self.pointer_position
             await self.gradual_cursor_animation(page, start_x, start_y, x, y)
             await asyncio.sleep(0.1)
 
         await page.mouse.click(x, y)
+        self._set_pointer_position(x, y)
 
         if delete_existing_text:
             await page.keyboard.press("ControlOrMeta+A")
