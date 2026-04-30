@@ -11,7 +11,7 @@ import psutil
 import concurrent.futures
 from concurrent.futures import Future
 
-from src.webgym.error import HttpStackOperationTimeoutError
+from src.gateway.error import HttpStackOperationTimeoutError
 import math
 
 _R = TypeVar("_R")
